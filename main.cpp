@@ -6,6 +6,8 @@ extern "C"
 #endif
 
 #include<libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libswscale/swscale.h>
 
 #ifdef __cplusplus
 }
@@ -20,22 +22,63 @@ const char option_mean_value[]="tcp";
 const char option_delay_key[]="max_delay";
 const char option_delay_value[]="5000000";
 
+
+void SaveFrame(AVFrame *pFrame, int width, int height, int iFrame)
+{
+    FILE *pFile;
+    char szFilename[32];
+    int  y;
+
+    // Open file
+    sprintf(szFilename, "frame/frame%d.ppm", iFrame);
+    pFile=fopen(szFilename, "wb");
+    if(pFile==NULL)
+        return;
+
+    // Write header
+    fprintf(pFile, "P6\n%d %d\n255\n", width, height);
+
+    // Write pixel data
+    for(y=0; y<height; y++) {
+        fwrite(pFrame->data[0]+y*pFrame->linesize[0], 1, width*3, pFile);
+    }
+
+    fclose(pFile);
+}
+
 int main(int argc,char **argv)
 {
     AVOutputFormat *ofmt = NULL;
     AVFormatContext *ifmt_ctx = NULL;
     AVFormatContext *ofmt_ctx = NULL;
+    AVCodecContext *in_codec_ctx = NULL;
+    AVStream *in_stream;
+    AVCodec *in_codec;
+    AVStream *out_stream;
+    AVCodec *out_codec;
+    AVCodecContext *out_codec_ctx;
+
+
     AVPacket pkt;
     int ret = 0;
     int i = 0;
     int video_index = -1;
     int frame_index = 0;
 
+    AVFrame *pFrame = av_frame_alloc();
+
+    AVFrame *pFrameRGB = av_frame_alloc();
+
+    if(pFrameRGB==NULL)
+    {
+        return -1;
+    }
+
     av_register_all();
+
     avformat_network_init();
 
     AVDictionary *avdic=NULL;
-
     av_dict_set(&avdic, option_mean_key, option_mean_value, 0);
     av_dict_set(&avdic, option_delay_key, option_delay_value, 0);
 
@@ -72,107 +115,88 @@ int main(int argc,char **argv)
     }
 
     ofmt = ofmt_ctx->oformat;
-    for(i = 0; i < ifmt_ctx->nb_streams; i++)
+
+    in_stream = ifmt_ctx->streams[video_index];
+
+    in_codec = avcodec_find_decoder(in_stream->codecpar->codec_id);
+
+    in_codec_ctx = avcodec_alloc_context3(in_codec);
+
+    if(in_codec->capabilities & CODEC_CAP_TRUNCATED)
     {
-        AVStream *in_stream = ifmt_ctx->streams[i];
-
-        AVCodec *in_codec = avcodec_find_decoder(in_stream->codecpar->codec_id);
-
-        AVCodecContext *in_codec_ctx = avcodec_alloc_context3(in_codec);
-
-        avcodec_parameters_to_context(in_codec_ctx, in_stream->codecpar);
-
-        AVStream *out_stream = avformat_new_stream(ofmt_ctx,in_codec_ctx->codec);
-
-        if(!out_stream)
-        {
-            avcodec_free_context(&in_codec_ctx);
-            printf("Failed allocating output stream.\n");
-            ret = AVERROR_UNKNOWN;
-            goto end;
-        }
-
-        avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
-
-        AVCodec *out_codec = avcodec_find_decoder(out_stream->codecpar->codec_id);
-
-        AVCodecContext *out_codec_ctx = avcodec_alloc_context3(out_codec);
-
-        ret = avcodec_parameters_to_context(out_codec_ctx, out_stream->codecpar);
-
-        if(ret < 0)
-        {
-            avcodec_free_context(&out_codec_ctx);
-            printf("Failed to copy context from input to output stream codec context\n");
-            goto end;
-        }
-        out_codec_ctx->codec_tag = 0;
-
-        if(ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER)
-        {
-            out_codec_ctx->flags |= CODEC_FLAG_GLOBAL_HEADER;
-        }
-        avcodec_free_context(&in_codec_ctx);
-        avcodec_free_context(&out_codec_ctx);
+        in_codec_ctx->flags|=CODEC_FLAG_TRUNCATED;
     }
 
-    av_dump_format(ofmt_ctx, 0, out_filename, 1);
-
-    if(!(ofmt->flags & AVFMT_NOFILE))
+    if(avcodec_open2(in_codec_ctx, in_codec,NULL) != 0)
     {
-        ret = avio_open(&ofmt_ctx->pb, out_filename, AVIO_FLAG_WRITE);
-        if(ret<0)
-        {
-            printf("Could not open output URL '%s'", out_filename);
-            goto end;
-        }
-    }
-
-    ret = avformat_write_header(ofmt_ctx, NULL);
-    if(ret < 0)
-    {
-        printf("Error occured when opening output URL\n");
-        goto end;
+        printf("decode errot \n");
+        return -1;
     }
 
     while(1)
     {
-        AVStream *in_stream;
-        AVStream *out_stream;
-
         ret = av_read_frame(ifmt_ctx, &pkt);
         if(ret < 0)
             break;
 
-        in_stream = ifmt_ctx->streams[pkt.stream_index];
-        out_stream = ofmt_ctx->streams[pkt.stream_index];
-
-        pkt.pts = av_rescale_q_rnd(pkt.pts, in_stream->time_base, out_stream->time_base, (enum AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
-        pkt.dts = av_rescale_q_rnd(pkt.dts, in_stream->time_base, out_stream->time_base, (enum AVRounding)(AV_ROUND_NEAR_INF|AV_ROUND_PASS_MINMAX));
-
-        pkt.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
-        pkt.pos = -1;
-
-        if(pkt.stream_index == video_index)
+        if(pkt.stream_index == video_index)  //video frame
         {
             printf("Receive %8d video frames from input URL\n", frame_index);
-            frame_index++;
+
+            avcodec_send_packet(in_codec_ctx, &pkt);
+
+            avcodec_receive_frame(in_codec_ctx, pFrame);
+
+            if (pFrame->key_frame == 1)
+            {
+
+                int picSize = in_codec_ctx->height * in_codec_ctx->width;
+                int newSize = picSize * 1.5;
+
+                unsigned char *buf = new unsigned char[newSize];
+
+                int height = in_codec_ctx->height;
+                int width = in_codec_ctx->width;
+
+                int a=0;
+                for (i=0; i<height; i++)
+                {
+                    memcpy(buf+a,pFrame->data[0] + i * pFrame->linesize[0], width);
+                    a+=width;
+                }
+                for (i=0; i<height/2; i++)
+                {
+                    memcpy(buf+a,pFrame->data[1] + i * pFrame->linesize[1], width/2);
+                    a+=width/2;
+                }
+                for (i=0; i<height/2; i++)
+                {
+                    memcpy(buf+a,pFrame->data[2] + i * pFrame->linesize[2], width/2);
+                    a+=width/2;
+                }
+
+                FILE *pFile;
+                char szFilename[32];
+
+                sprintf(szFilename, "frame%d.ppm", frame_index);
+                printf("%s\n", szFilename);
+                pFile=fopen(szFilename, "wb");
+                if(pFile == NULL)
+                {
+                    printf("file empty \n");
+                    return -1;
+                }
+
+                fwrite(buf, 1, newSize, pFile);
+
+                fclose(pFile);
+
+                delete [] buf;
+
+                frame_index++;
+            }
         }
 
-        ret = av_interleaved_write_frame(ofmt_ctx, &pkt);
-        if(ret < 0)
-        {
-            if(ret==-22)
-            {
-                continue;
-            }
-            else
-            {
-                printf("Error muxing packet.error code %d\n" , ret);
-                break;
-            }
-        }
-        av_packet_unref(&pkt);
     }
 
     av_write_trailer(ofmt_ctx);
@@ -180,6 +204,8 @@ int main(int argc,char **argv)
     end:
     av_dict_free(&avdic);
     avformat_close_input(&ifmt_ctx);
+    av_frame_free(&pFrame);
+    av_frame_free(&pFrameRGB);
 
     if(ofmt_ctx && !(ofmt->flags & AVFMT_NOFILE))
     {

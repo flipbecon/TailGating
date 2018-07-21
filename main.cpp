@@ -1,4 +1,5 @@
 #include<stdio.h>
+#include<unistd.h>
 
 #ifdef __cplusplus
 extern "C"
@@ -23,29 +24,6 @@ const char option_delay_key[]="max_delay";
 const char option_delay_value[]="5000000";
 
 
-void SaveFrame(AVFrame *pFrame, int width, int height, int iFrame)
-{
-    FILE *pFile;
-    char szFilename[32];
-    int  y;
-
-    // Open file
-    sprintf(szFilename, "frame/frame%d.ppm", iFrame);
-    pFile=fopen(szFilename, "wb");
-    if(pFile==NULL)
-        return;
-
-    // Write header
-    fprintf(pFile, "P6\n%d %d\n255\n", width, height);
-
-    // Write pixel data
-    for(y=0; y<height; y++) {
-        fwrite(pFrame->data[0]+y*pFrame->linesize[0], 1, width*3, pFile);
-    }
-
-    fclose(pFile);
-}
-
 int main(int argc,char **argv)
 {
     AVOutputFormat *ofmt = NULL;
@@ -66,7 +44,6 @@ int main(int argc,char **argv)
     int frame_index = 0;
 
     AVFrame *pFrame = av_frame_alloc();
-
     AVFrame *pFrameRGB = av_frame_alloc();
 
     if(pFrameRGB==NULL)
@@ -133,31 +110,25 @@ int main(int argc,char **argv)
         return -1;
     }
 
-    while(1)
+    while(!av_read_frame(ifmt_ctx, &pkt))
     {
-        ret = av_read_frame(ifmt_ctx, &pkt);
-        if(ret < 0)
-            break;
-
-        if(pkt.stream_index == video_index)  //video frame
+        if(pkt.stream_index == video_index && pkt.flags == AV_PKT_FLAG_KEY)  //video frame
         {
             printf("Receive %8d video frames from input URL\n", frame_index);
-
             avcodec_send_packet(in_codec_ctx, &pkt);
-
             avcodec_receive_frame(in_codec_ctx, pFrame);
 
             if (pFrame->key_frame == 1)
             {
-
+                printf("key frame = %d", 1);
                 int picSize = in_codec_ctx->height * in_codec_ctx->width;
                 int newSize = picSize * 1.5;
 
-                unsigned char *buf = new unsigned char[newSize];
+                unsigned char buf[newSize];
 
                 int height = in_codec_ctx->height;
                 int width = in_codec_ctx->width;
-
+/*
                 int a=0;
                 for (i=0; i<height; i++)
                 {
@@ -174,29 +145,29 @@ int main(int argc,char **argv)
                     memcpy(buf+a,pFrame->data[2] + i * pFrame->linesize[2], width/2);
                     a+=width/2;
                 }
-
+                */
+/*
                 FILE *pFile;
                 char szFilename[32];
 
-                sprintf(szFilename, "frame%d.ppm", frame_index);
+                sprintf(szFilename, "frame%d.yuv", frame_index);
                 printf("%s\n", szFilename);
                 pFile=fopen(szFilename, "wb");
                 if(pFile == NULL)
                 {
                     printf("file empty \n");
-                    return -1;
+                    goto end;
                 }
 
                 fwrite(buf, 1, newSize, pFile);
 
                 fclose(pFile);
-
-                delete [] buf;
-
+*/
                 frame_index++;
+                usleep(500000);
             }
         }
-
+        av_packet_unref(&pkt);
     }
 
     av_write_trailer(ofmt_ctx);

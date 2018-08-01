@@ -1,15 +1,18 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.6)
 
 project(TailGating)
 
 # rtsp://admin:admin@192.168.19.101:554/cam/realmonitor?channel=1&subtype=0
 
-set(CMAKE_CXX_FLAGS_DEBUG   "-O0 -g -ggdb")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -std=c++11 ")
+set(CMAKE_CXX_FLAGS_DEBUG   "-O0 -g -ggdb -std=c++11")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -std=c++11 -O3")
 
-add_definitions(-Wdeprecated-declarations)
+add_definitions(-Wdeprecated-declarations -Wformat=0)
 
 include_directories(${CMAKE_SOURCE_DIR}/include/ffmpeg)
+include_directories(${CMAKE_SOURCE_DIR}/include/f12)
+
+add_subdirectory(src/f12)
 
 link_directories(/usr/lib/x86_64-linux-gnu)
 
@@ -40,5 +43,5 @@ set_target_properties(libswscale PROPERTIES IMPORTED_LOCATION ${CMAKE_SOURCE_DIR
 
 add_executable(TailGating main.cpp)
 
-target_link_libraries(TailGating libavdevice libavformat libavcodec libavfilter libavutil libswresample libswscale
+target_link_libraries(TailGating f12 libavdevice libavformat libavcodec libavfilter libavutil libswresample libswscale
         -lpthread -llzma -lz -lm -ldl -lpthread -lrt)
